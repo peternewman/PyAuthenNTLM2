@@ -133,6 +133,11 @@ class CacheGroups:
 cache = CacheConnections()
 cacheGroups = CacheGroups()
 
+def cache_key(req):
+    # Using the connection ID doesn't seem to work on Apache 2.4, so switch to the remote address tuple of IP and port.
+    #return req.connection.id
+    return "%s-%s" % (req.connection.remote_addr)
+
 def ntlm_message_type(msg):
     if not msg.startswith('NTLMSSP\x00') or len(msg)<12:
         raise RuntimeError("Not a valid NTLM message: '%s'" % hexlify(msg))
@@ -242,7 +247,7 @@ def handle_type1(req, ntlm_message):
     @req            The request that carried the message
     @ntlm_message   The actual Type1 message, in binary format
     '''
-    cache.remove(req.connection.id)
+    cache.remove(cache_key(req))
     cache.clean()
 
     try:
@@ -250,7 +255,7 @@ def handle_type1(req, ntlm_message):
     except Exception, e:
         return apache.HTTP_INTERNAL_SERVER_ERROR
 
-    cache.add(req.connection.id, proxy)
+    cache.add(cache_key(req), proxy)
     req.err_headers_out.add('WWW-Authenticate', "NTLM " + base64.b64encode(ntlm_challenge))
     return apache.HTTP_UNAUTHORIZED
 
@@ -317,7 +322,7 @@ def handle_type3(req, ntlm_message):
     @ntlm_message   The actual Type3 message, in binary format
     '''
     
-    proxy = cache.get_proxy(req.connection.id)
+    proxy = cache.get_proxy(cache_key(req))
     try:
         user, domain = parse_ntlm_authenticate(ntlm_message)
         if not domain:
@@ -328,7 +333,7 @@ def handle_type3(req, ntlm_message):
         user, domain = 'invalid', 'invalid'
         result = False
     if not result:
-        cache.remove(req.connection.id)
+        cache.remove(cache_key(req))
         req.log_error('PYNTLM: User %s/%s authentication for URI %s' % (
             domain,user,req.unparsed_uri))
         return handle_unauthorized(req)
@@ -336,7 +341,7 @@ def handle_type3(req, ntlm_message):
     req.log_error('PYNTLM: User %s/%s has been authenticated to access URI %s' % (user,domain,req.unparsed_uri), apache.APLOG_NOTICE)
     set_remote_user(req, user, domain)
     result = check_authorization(req, user, proxy)
-    cache.remove(req.connection.id)
+    cache.remove(cache_key(req))
 
     if not result:
         return apache.HTTP_FORBIDDEN
@@ -457,7 +462,7 @@ def authenhandler(req):
         if ntlm_version==1:
             return handle_type1(req, ah_data[1]) 
         if ntlm_version==3:
-            if cache.has_key(req.connection.id):
+            if cache.has_key(cache_key(req)):
                 return handle_type3(req, ah_data[1])
             req.log_error('Unexpected NTLM message Type 3 in new connection for URI %s' %
                 (req.unparsed_uri), apache.APLOG_INFO)
